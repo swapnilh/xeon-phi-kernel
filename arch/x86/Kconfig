@@ -2396,6 +2396,11 @@ config X86_DMA_REMAP
 	bool
 	depends on STA2X11
 
+config IOSF_MBI
+	tristate
+	default m
+	depends on PCI
+
 source "net/Kconfig"
 
 source "drivers/Kconfig"

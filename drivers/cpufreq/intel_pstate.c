@@ -763,6 +763,10 @@ static inline void intel_pstate_sample(struct cpudata *cpu)
 	rdmsrl(MSR_IA32_MPERF, mperf);
 	local_irq_restore(flags);
 
+	if (mperf == cpu->prev_mperf) {
+		return;
+	}
+
 	cpu->last_sample_time = cpu->sample.time;
 	cpu->sample.time = ktime_get();
 	cpu->sample.aperf = aperf;

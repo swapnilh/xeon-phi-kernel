@@ -2013,6 +2013,9 @@ int in_gate_area_no_mm(unsigned long addr);
 extern int sysctl_drop_caches;
 int drop_caches_sysctl_handler(struct ctl_table *, int,
 					void __user *, size_t *, loff_t *);
+extern int sysctl_node_sort;
+int sort_node_page_lists_sysctl_handler(struct ctl_table *, int,
+					void __user *, size_t *, loff_t *);
 #endif
 
 unsigned long shrink_slab(struct shrink_control *shrink,

@@ -128,6 +128,7 @@ static int __maybe_unused two = 2;
 static int __maybe_unused four = 4;
 static unsigned long one_ul = 1;
 static int one_hundred = 100;
+static int max_numnodes = MAX_NUMNODES;
 #ifdef CONFIG_PRINTK
 static int ten_thousand = 10000;
 #endif
@@ -1292,6 +1293,15 @@ static struct ctl_table vm_table[] = {
 		.maxlen		= sizeof(sysctl_lowmem_reserve_ratio),
 		.mode		= 0644,
 		.proc_handler	= lowmem_reserve_ratio_sysctl_handler,
+	},
+	{
+		.procname	= "sort_node_page_lists",
+		.data		= &sysctl_node_sort,
+		.maxlen		= sizeof(int),
+		.mode		= 0200,
+		.proc_handler	= sort_node_page_lists_sysctl_handler,
+		.extra1		= &zero,
+		.extra2		= &max_numnodes,
 	},
 	{
 		.procname	= "drop_caches",

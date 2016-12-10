@@ -850,6 +850,8 @@ void intel_pmu_lbr_init_snb(void);
 
 void intel_pmu_lbr_init_hsw(void);
 
+void intel_pmu_lbr_init_knl(void);
+
 int intel_pmu_setup_lbr_filter(struct perf_event *event);
 
 int p4_pmu_init(void);

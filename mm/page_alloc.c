@@ -60,6 +60,7 @@
 #include <linux/page-debug-flags.h>
 #include <linux/hugetlb.h>
 #include <linux/sched/rt.h>
+#include <linux/list_sort.h>
 
 #include <asm/sections.h>
 #include <asm/tlbflush.h>
@@ -228,6 +229,72 @@ EXPORT_SYMBOL(nr_online_nodes);
 #endif
 
 int page_group_by_mobility_disabled __read_mostly;
+
+int cmp_pages(void *priv, struct list_head *a, struct list_head *b)
+{
+	/*
+	 * We just need to compare the pointers.  The 'struct
+	 * page' with vmemmap are ordered in the virtual address
+	 * space by physical address.  The list_head is embedded
+	 * in the 'struct page'.  So we don't even have to get
+	 * back to the 'struct page' here.
+	 */
+	if (a < b)
+		return -1;
+	if (a == b)
+		return 0;
+	/* a > b */
+	return 1;
+}
+
+int sort_pagelists(struct zone *zone)
+{
+	unsigned int order;
+	unsigned int type;
+
+	drain_all_pages();
+
+	for_each_migratetype_order(order, type) {
+		struct list_head *l = &zone->free_area[order].free_list[type];
+		//printk("list[%d][%d]: %p empty: %d\n", order, type, l, list_empty(l));
+		spin_lock(&zone->lock);
+		list_sort(NULL, l, &cmp_pages);
+		spin_unlock(&zone->lock);
+	}
+	return 0;
+}
+
+int sysctl_node_sort;
+int sort_node_page_lists_sysctl_handler(struct ctl_table *table, int write,
+		        void __user *buffer, size_t *length, loff_t *ppos)
+{
+	int ret;
+	int node_to_sort;
+	struct zone *zone;
+
+	ret = proc_dointvec_minmax(table, write, buffer, length, ppos);
+	if (ret)
+		return ret;
+	node_to_sort = ACCESS_ONCE(sysctl_node_sort);
+
+	if (!node_online(node_to_sort))
+		return -EINVAL;
+
+	pr_info("sorting node %d\n", node_to_sort);
+
+	/* Not the world's most efficient loop */
+	for_each_zone(zone) {
+		if (zone->node != node_to_sort)
+			continue;
+		if (!zone_is_initialized(zone))
+			continue;
+		if (zone_is_empty(zone))
+			continue;
+		printk("sorting zone: %p / %s\n", zone, zone->name);
+		sort_pagelists(zone);
+	}
+	return 0;
+}
 
 void set_pageblock_migratetype(struct page *page, int migratetype)
 {
@@ -2697,7 +2764,7 @@ __alloc_pages_nodemask(gfp_t gfp_mask, unsigned int order,
 		return NULL;
 
 retry_cpuset:
-	cpuset_mems_cookie = get_mems_allowed();
+	cpuset_mems_cookie = read_mems_allowed_begin();
 
 	/* The preferred zone is used for statistics later */
 	first_zones_zonelist(zonelist, high_zoneidx,
@@ -2752,7 +2819,7 @@ out:
 	 * the mask is being updated. If a page allocation is about to fail,
 	 * check if the cpuset changed during allocation and if so, retry.
 	 */
-	if (unlikely(!put_mems_allowed(cpuset_mems_cookie) && !page))
+	if (unlikely(!page && read_mems_allowed_retry(cpuset_mems_cookie)))
 		goto retry_cpuset;
 
 	memcg_kmem_commit_charge(page, memcg, order);
@@ -3016,9 +3083,9 @@ bool skip_free_areas_node(unsigned int flags, int nid)
 		goto out;
 
 	do {
-		cpuset_mems_cookie = get_mems_allowed();
+		cpuset_mems_cookie = read_mems_allowed_begin();
 		ret = !node_isset(nid, cpuset_current_mems_allowed);
-	} while (!put_mems_allowed(cpuset_mems_cookie));
+	} while (read_mems_allowed_retry(cpuset_mems_cookie));
 out:
 	return ret;
 }

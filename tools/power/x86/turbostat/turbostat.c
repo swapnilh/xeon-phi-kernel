@@ -71,8 +71,13 @@ unsigned int extra_msr_offset32;
 unsigned int extra_msr_offset64;
 unsigned int extra_delta_offset32;
 unsigned int extra_delta_offset64;
+unsigned int aperf_mperf_multiplier = 1;
 int do_smi;
 double bclk;
+double base_hz;
+unsigned int has_base_hz;
+double tsc_tweak = 1.0;
+double bzy_pct_cutoff;
 unsigned int show_pkg;
 unsigned int show_core;
 unsigned int show_cpu;
@@ -93,6 +98,7 @@ unsigned int do_ring_perf_limit_reasons;
 unsigned int crystal_hz;
 unsigned long long tsc_hz;
 int base_cpu;
+double discover_bclk(unsigned int family, unsigned int model);
 
 #define RAPL_PKG		(1 << 0)
 					/* 0x610 MSR_PKG_POWER_LIMIT */
@@ -453,6 +459,7 @@ int format_counters(struct thread_data *t, struct core_data *c,
 	struct pkg_data *p)
 {
 	double interval_float;
+	double bzy_pct;
 	char *fmt8;
 
 	 /* if showing only 1st thread in core and this isn't one, bail out */
@@ -497,16 +504,23 @@ int format_counters(struct thread_data *t, struct core_data *c,
 
 	/* %Busy */
 	if (has_aperf) {
+		bzy_pct = 100.0 * t->mperf/t->tsc/tsc_tweak;
 		if (!skip_c0)
-			outp += sprintf(outp, "%8.2f", 100.0 * t->mperf/t->tsc);
+			outp += sprintf(outp, "%8.2f", bzy_pct);
 		else
-			outp += sprintf(outp, "********");
+			outp += sprintf(outp, "   *****");
 	}
 
 	/* Bzy_MHz */
-	if (has_aperf)
-		outp += sprintf(outp, "%8.0f",
-			1.0 * t->tsc / units * t->aperf / t->mperf / interval_float);
+	if (has_aperf) {
+		if (bzy_pct < bzy_pct_cutoff)
+			outp += sprintf(outp, "    ****");
+		else if (has_base_hz)
+			outp += sprintf(outp, "%8.0f", base_hz / units * t->aperf / t->mperf);
+		else
+			outp += sprintf(outp, "%8.0f",
+				1.0 * t->tsc / units * t->aperf / t->mperf / interval_float);
+	}
 
 	/* TSC_MHz */
 	outp += sprintf(outp, "%8.0f", 1.0 * t->tsc/units/interval_float);
@@ -977,6 +991,8 @@ int get_counters(struct thread_data *t, struct core_data *c, struct pkg_data *p)
 			return -3;
 		if (get_msr(cpu, MSR_IA32_MPERF, &t->mperf))
 			return -4;
+		t->aperf = t->aperf * aperf_mperf_multiplier;
+		t->mperf = t->mperf * aperf_mperf_multiplier;
 	}
 
 	if (do_smi) {
@@ -1142,6 +1158,13 @@ int slv_pkg_cstate_limits[16] = {PCL__0, PCL__1, PCLRSV, PCLRSV, PCL__4, PCLRSV,
 int amt_pkg_cstate_limits[16] = {PCL__0, PCL__1, PCL__2, PCLRSV, PCLRSV, PCLRSV, PCL__6, PCL__7, PCLRSV, PCLRSV, PCLRSV, PCLRSV, PCLRSV, PCLRSV, PCLRSV, PCLRSV};
 int phi_pkg_cstate_limits[16] = {PCL__0, PCL__2, PCL_6N, PCL_6R, PCLRSV, PCLRSV, PCLRSV, PCLUNL, PCLRSV, PCLRSV, PCLRSV, PCLRSV, PCLRSV, PCLRSV, PCLRSV, PCLRSV};
 
+
+static void
+calculate_tsc_tweak()
+{
+	tsc_tweak = base_hz / tsc_hz;
+}
+
 static void
 dump_nhm_platform_info(void)
 {
@@ -1305,12 +1328,13 @@ dump_knl_turbo_ratio_limits(void)
 
 	get_msr(0, MSR_NHM_TURBO_RATIO_LIMIT, &msr);
 
-	fprintf(stderr, "cpu0: MSR_NHM_TURBO_RATIO_LIMIT: 0x%08llx\n",
+	fprintf(stderr, "cpu0: MSR_TURBO_RATIO_LIMIT: 0x%08llx\n",
 	msr);
 
 	/**
 	 * Turbo encoding in KNL is as follows:
-	 * [7:0] -- Base value of number of active cores of bucket 1.
+	 * [0] -- Reserved
+	 * [7:1] -- Base value of number of active cores of bucket 1.
 	 * [15:8] -- Base value of freq ratio of bucket 1.
 	 * [20:16] -- +ve delta of number of active cores of bucket 2.
 	 * i.e. active cores of bucket 2 =
@@ -1329,8 +1353,8 @@ dump_knl_turbo_ratio_limits(void)
 	 * [60:56]-- +ve delta of number of active cores of bucket 7.
 	 * [63:61]-- -ve delta of freq ratio of bucket 7.
 	 */
-	cores = msr & 0xFF;
-	ratio = (msr >> 8) && 0xFF;
+	cores = (msr & 0xFF) >> 1;
+	ratio = (msr >> 8) & 0xFF;
 	if (ratio > 0)
 		fprintf(stderr,
 			"%d * %.0f = %.0f MHz max turbo %d active cores\n",
@@ -1338,8 +1362,8 @@ dump_knl_turbo_ratio_limits(void)
 
 	for (i = 16; i < 64; i = i + 8) {
 		delta_cores = (msr >> i) & 0x1F;
-		delta_ratio = (msr >> (i + 5)) && 0x7;
-		if (!delta_cores || !delta_ratio)
+		delta_ratio = (msr >> (i + 5)) & 0x7;
+		if (!delta_cores)
 			return;
 		cores = cores + delta_cores;
 		ratio = ratio - delta_ratio;
@@ -1753,6 +1777,7 @@ void check_permissions()
 int probe_nhm_msrs(unsigned int family, unsigned int model)
 {
 	unsigned long long msr;
+	unsigned int base_ratio;
 	int *pkg_cstate_limits;
 
 	if (!genuine_intel)
@@ -1760,6 +1785,8 @@ int probe_nhm_msrs(unsigned int family, unsigned int model)
 
 	if (family != 6)
 		return 0;
+
+	bclk = discover_bclk(family, model);
 
 	switch (model) {
 	case 0x1A:	/* Core i7, Xeon 5500 series - Bloomfield, Gainstown NHM-EP */
@@ -1803,9 +1830,13 @@ int probe_nhm_msrs(unsigned int family, unsigned int model)
 		return 0;
 	}
 	get_msr(base_cpu, MSR_NHM_SNB_PKG_CST_CFG_CTL, &msr);
-
 	pkg_cstate_limit = pkg_cstate_limits[msr & 0xF];
 
+	get_msr(base_cpu, MSR_NHM_PLATFORM_INFO, &msr);
+	base_ratio = (msr >> 8) & 0xFF;
+
+	base_hz = base_ratio * bclk * 1000000;
+	has_base_hz = 1;
 	return 1;
 }
 int has_nhm_turbo_ratio_limit(unsigned int family, unsigned int model)
@@ -1814,6 +1845,7 @@ int has_nhm_turbo_ratio_limit(unsigned int family, unsigned int model)
 	/* Nehalem compatible, but do not include turbo-ratio limit support */
 	case 0x2E:	/* Nehalem-EX Xeon - Beckton */
 	case 0x2F:	/* Westmere-EX Xeon - Eagleton */
+	case 0x57:	/* PHI - Knights Landing (different MSR definition) */
 		return 0;
 	default:
 		return 1;
@@ -2460,6 +2492,26 @@ int is_knl(unsigned int family, unsigned int model)
 	return 0;
 }
 
+unsigned int get_aperf_mperf_multiplier(unsigned int family, unsigned int model)
+{
+	if (is_knl(family, model))
+		return 1024;
+	return 1;
+}
+/*
+ * Some systems have noise on APERf/MPERF when they are profoundly idle
+ * On such systems under those conditions, the calculation of Bzy_MHz
+ * gets unstable and can print erroneous values that confuse users.
+ * So under those conditions on those systems, we simply print 0 Mhz.
+ */
+double get_bzy_pct_cutoff(unsigned int family, unsigned int model)
+{
+	if (is_knl(family, model))
+		return 0.1;	/* if more than 99.9% idle, print 0 for Bzy_MHz */
+	else
+		return 0.0;
+}
+
 #define SLM_BCLK_FREQS 5
 double slm_freq_table[SLM_BCLK_FREQS] = { 83.3, 100.0, 133.3, 116.7, 80.0};
 
@@ -2486,7 +2538,7 @@ double slm_bclk(void)
 
 double discover_bclk(unsigned int family, unsigned int model)
 {
-	if (has_snb_msrs(family, model))
+	if (has_snb_msrs(family, model) || is_knl(family, model))
 		return 100.00;
 	else if (is_slm(family, model))
 		return slm_bclk();
@@ -2619,6 +2671,9 @@ void process_cpuid()
 	do_ptm = eax & (1 << 6);
 	has_epb = ecx & (1 << 3);
 
+	if (has_aperf)
+		aperf_mperf_multiplier = get_aperf_mperf_multiplier(family, model);
+
 	if (debug)
 		fprintf(stderr, "CPUID(6): %sAPERF, %sDTS, %sPTM, %sEPB\n",
 			has_aperf ? "" : "No ",
@@ -2661,6 +2716,8 @@ void process_cpuid()
 		}
 	}
 
+	bzy_pct_cutoff = get_bzy_pct_cutoff(family, model);
+
 	do_nhm_platform_info = do_nhm_cstates = do_smi = probe_nhm_msrs(family, model);
 	do_snb_cstates = has_snb_msrs(family, model);
 	do_pc2 = do_snb_cstates && (pkg_cstate_limit >= PCL__2);
@@ -2671,13 +2728,15 @@ void process_cpuid()
 	do_skl_residency = has_skl_msrs(family, model);
 	do_slm_cstates = is_slm(family, model);
 	do_knl_cstates  = is_knl(family, model);
-	bclk = discover_bclk(family, model);
 
 	rapl_probe(family, model);
 	perf_limit_reasons_probe(family, model);
 
 	if (debug)
 		dump_cstate_pstate_config_info();
+
+	if (has_skl_msrs(family, model))
+		calculate_tsc_tweak();
 
 	return;
 }
