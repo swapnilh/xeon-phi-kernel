@@ -710,8 +710,42 @@ void do_exit(long code)
 {
 	struct task_struct *tsk = current;
 	int group_dead;
+	static DEFINE_MUTEX(result_mutex);
 
 	profile_task_exit(tsk);
+
+        /*
+	 * Statistics for Badger Trap
+ 	 */
+        if(current->mm && current->mm->badger_trap_en == 1)
+        {
+		mutex_lock(&result_mutex);
+		current->mm->total_dtlb_misses+= current->total_dtlb_misses;
+		current->mm->total_dtlb_4k_misses+= current->total_dtlb_4k_misses;
+		current->mm->total_dtlb_hugetlb_misses+= current->total_dtlb_hugetlb_misses;
+		mutex_unlock(&result_mutex);
+	}
+
+	if(current->mm && current->mm->badger_trap_en == 1 && current->tgid == current->pid)
+	{
+		if(current->real_parent->mm->badger_trap_en == 1)
+		{
+			mutex_lock(&result_mutex);
+			current->real_parent->mm->total_dtlb_misses+=current->mm->total_dtlb_misses;
+			current->real_parent->mm->total_dtlb_4k_misses+=current->mm->total_dtlb_4k_misses;
+			current->real_parent->mm->total_dtlb_hugetlb_misses+=current->mm->total_dtlb_hugetlb_misses;
+			mutex_unlock(&result_mutex);
+		}
+		else
+		{
+			printk("===================================\n");
+			printk("Statistics for Process %s\n",current->comm);
+			printk("DTLB miss detected %lu\n",current->mm->total_dtlb_misses);
+			printk("DTLB miss for 4KB page detected %lu\n",current->mm->total_dtlb_4k_misses);
+			printk("DTLB miss for hugepage detected %lu\n",current->mm->total_dtlb_hugetlb_misses);
+			printk("===================================\n");
+		}
+	}
 
 	WARN_ON(blk_needs_flush_plug(tsk));
 

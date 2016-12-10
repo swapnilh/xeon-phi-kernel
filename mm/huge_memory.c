@@ -27,6 +27,9 @@
 #include <asm/pgalloc.h>
 #include "internal.h"
 
+extern inline pmd_t pmd_mkreserve(pmd_t pmd);
+extern inline pte_t pte_mkreserve(pte_t pte);
+
 /*
  * By default transparent hugepage support is enabled for all mappings
  * and khugepaged scans all mappings. Defrag is only invoked by
@@ -758,6 +761,12 @@ static int __do_huge_pmd_anonymous_page(struct mm_struct *mm,
 		entry = mk_huge_pmd(page, vma);
 		page_add_new_anon_rmap(page, vma, haddr);
 		pgtable_trans_huge_deposit(mm, pmd, pgtable);
+		/* Make the page table entry as reserved for TLB miss tracking */
+		if(mm && (mm->badger_trap_en==1) && (!(flags & FAULT_FLAG_INST))
+			&& (vma->map_hbw))
+		{
+			entry = pmd_mkreserve(entry);
+		}
 		set_pmd_at(mm, haddr, pmd, entry);
 		add_mm_counter(mm, MM_ANONPAGES, HPAGE_PMD_NR);
 		atomic_long_inc(&mm->nr_ptes);
@@ -800,6 +809,14 @@ static void set_huge_zero_page(pgtable_t pgtable, struct mm_struct *mm,
 	entry = pmd_wrprotect(entry);
 	entry = pmd_mkhuge(entry);
 	pgtable_trans_huge_deposit(mm, pmd, pgtable);
+	/* Make the page table entry as reserved for TLB miss tracking 
+	 * No need to worry for zero page with instruction faults.
+	 * Instruction faults will never reach here.
+	 */
+	if(mm && (mm->badger_trap_en==1) && (vma->map_hbw))
+	{
+		entry = pmd_mkreserve(entry);
+	}
 	set_pmd_at(mm, haddr, pmd, entry);
 	atomic_long_inc(&mm->nr_ptes);
 }
@@ -1043,7 +1060,8 @@ static int do_huge_pmd_wp_page_fallback(struct mm_struct *mm,
 					unsigned long address,
 					pmd_t *pmd, pmd_t orig_pmd,
 					struct page *page,
-					unsigned long haddr)
+					unsigned long haddr,
+					unsigned int flags)
 {
 	spinlock_t *ptl;
 	pgtable_t pgtable;
@@ -1110,6 +1128,11 @@ static int do_huge_pmd_wp_page_fallback(struct mm_struct *mm,
 		page_add_new_anon_rmap(pages[i], vma, haddr);
 		pte = pte_offset_map(&_pmd, haddr);
 		VM_BUG_ON(!pte_none(*pte));
+		/* Make the page table entry as reserved for TLB miss tracking */
+		if(mm && (mm->badger_trap_en==1) && (!(flags & FAULT_FLAG_INST)))
+		{
+			entry = pte_mkreserve(entry);
+		}
 		set_pte_at(mm, haddr, pte, entry);
 		pte_unmap(pte);
 	}
@@ -1142,7 +1165,7 @@ out_free_pages:
 }
 
 int do_huge_pmd_wp_page(struct mm_struct *mm, struct vm_area_struct *vma,
-			unsigned long address, pmd_t *pmd, pmd_t orig_pmd)
+			unsigned long address, pmd_t *pmd, pmd_t orig_pmd, unsigned int flags)
 {
 	spinlock_t *ptl;
 	int ret = 0;
@@ -1187,7 +1210,7 @@ alloc:
 					address, pmd, orig_pmd, haddr);
 		} else {
 			ret = do_huge_pmd_wp_page_fallback(mm, vma, address,
-					pmd, orig_pmd, page, haddr);
+					pmd, orig_pmd, page, haddr, flags);
 			if (ret & VM_FAULT_OOM) {
 				split_huge_page(page);
 				ret |= VM_FAULT_FALLBACK;
@@ -1235,6 +1258,12 @@ alloc:
 		entry = mk_huge_pmd(new_page, vma);
 		pmdp_clear_flush_notify(vma, haddr, pmd);
 		page_add_new_anon_rmap(new_page, vma, haddr);
+		/* Make the page table entry as reserved for TLB miss tracking */
+		if(mm && (mm->badger_trap_en==1) && (!(flags & FAULT_FLAG_INST))
+			&& (vma->map_hbw))
+		{
+			entry = pmd_mkreserve(entry);
+		}
 		set_pmd_at(mm, haddr, pmd, entry);
 		update_mmu_cache_pmd(vma, address, pmd);
 		if (!page) {

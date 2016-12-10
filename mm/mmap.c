@@ -1216,7 +1216,8 @@ unsigned long do_mmap_pgoff(struct file *file, unsigned long addr,
 	struct mm_struct * mm = current->mm;
 	struct inode *inode;
 	vm_flags_t vm_flags;
-
+	struct vm_area_struct *vma;
+	int needs_hbw = 0; // SWAPNIL - Added to lower MAP_HBW flag before switch case below
 	*populate = 0;
 
 	/*
@@ -1228,9 +1229,12 @@ unsigned long do_mmap_pgoff(struct file *file, unsigned long addr,
 	if ((prot & PROT_READ) && (current->personality & READ_IMPLIES_EXEC))
 		if (!(file && (file->f_path.mnt->mnt_flags & MNT_NOEXEC)))
 			prot |= PROT_EXEC;
-
+	if(flags & MAP_HBW)
+		printk("Checking length\n");
 	if (!len)
 		return -EINVAL;
+	if(flags & MAP_HBW)
+		printk("Checking length done\n");
 
 	if (!(flags & MAP_FIXED))
 		addr = round_hint_to_min(addr);
@@ -1279,6 +1283,12 @@ unsigned long do_mmap_pgoff(struct file *file, unsigned long addr,
 
 	inode = file ? file_inode(file) : NULL;
 
+	if(flags & MAP_HBW) { //Lowering the MAP_HBW flag
+		flags = flags & ~MAP_HBW;
+		needs_hbw = 1;
+	}
+	
+
 	if (file) {
 		switch (flags & MAP_TYPE) {
 		case MAP_SHARED:
@@ -1317,6 +1327,7 @@ unsigned long do_mmap_pgoff(struct file *file, unsigned long addr,
 			break;
 
 		default:
+			printk("File switch\n");
 			return -EINVAL;
 		}
 	} else {
@@ -1335,6 +1346,7 @@ unsigned long do_mmap_pgoff(struct file *file, unsigned long addr,
 			pgoff = addr >> PAGE_SHIFT;
 			break;
 		default:
+			printk("Else switch\n");
 			return -EINVAL;
 		}
 	}
@@ -1353,7 +1365,20 @@ unsigned long do_mmap_pgoff(struct file *file, unsigned long addr,
 			vm_flags |= VM_NORESERVE;
 	}
 
+	if(needs_hbw)
+		printk("Before MMAP\n");
 	addr = mmap_region(file, addr, len, vm_flags, pgoff);
+	if(needs_hbw)
+		printk("MMAP done\n");
+
+	vma = find_vma(mm, addr);
+	if(needs_hbw) {
+		vma->map_hbw = 1;	
+		printk("MMAP received MAP_HBW flag\n");
+	}
+	else	
+		vma->map_hbw = 0;
+
 	if (!IS_ERR_VALUE(addr) &&
 	    ((vm_flags & VM_LOCKED) ||
 	     (flags & (MAP_POPULATE | MAP_NONBLOCK)) == MAP_POPULATE))

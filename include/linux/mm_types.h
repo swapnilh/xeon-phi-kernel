@@ -318,6 +318,7 @@ struct vm_area_struct {
 	RH_KABI_RESERVE(2)
 	RH_KABI_RESERVE(3)
 	RH_KABI_RESERVE(4)
+	int map_hbw;
 };
 
 struct core_thread {
@@ -466,6 +467,14 @@ struct mm_struct {
 	bool tlb_flush_pending;
 #endif
 	struct uprobes_state uprobes_state;
+
+/*
+ *  Variables for Badger Trap
+ */
+	unsigned int badger_trap_en;
+	unsigned long total_dtlb_misses;
+	unsigned long total_dtlb_4k_misses;
+	unsigned long total_dtlb_hugetlb_misses;
 
 	/* reserved for Red Hat */
 #if defined(__GENKSYMS__) || !defined(CONFIG_SPAPR_TCE_IOMMU)

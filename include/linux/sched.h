@@ -1538,6 +1538,9 @@ struct task_struct {
 	unsigned int	sequential_io_avg;
 #endif
 
+	unsigned long total_dtlb_misses;
+	unsigned long total_dtlb_4k_misses;
+	unsigned long total_dtlb_hugetlb_misses;
 	/* reserved for Red Hat */
 #ifdef CONFIG_DETECT_HUNG_TASK
 	RH_KABI_USE(1, unsigned long last_switch_count)

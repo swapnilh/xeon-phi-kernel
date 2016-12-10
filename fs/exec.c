@@ -66,6 +66,9 @@
 
 #include <trace/events/sched.h>
 
+extern int is_badger_trap_process(const char* proc_name);
+extern void badger_trap_init(struct mm_struct *mm);
+
 int suid_dumpable = 0;
 
 static LIST_HEAD(formats);
@@ -1129,6 +1132,19 @@ void setup_new_exec(struct linux_binprm * bprm)
 
 	perf_event_exec();
 	__set_task_comm(current, bprm->tcomm, true);
+
+	/* Check if we need to enable badger trap for this process*/
+	if(is_badger_trap_process(current->comm))
+	{
+		current->mm->badger_trap_en = 1;
+		badger_trap_init(current->mm);
+	}
+
+	if(current && current->real_parent && current->real_parent != current && current->real_parent->mm && current->real_parent->mm->badger_trap_en)
+	{
+		current->mm->badger_trap_en = 1;
+		badger_trap_init(current->mm);
+	}
 
 	/* Set the new mm task size. We have to do that late because it may
 	 * depend on TIF_32BIT which is only updated in flush_thread() on

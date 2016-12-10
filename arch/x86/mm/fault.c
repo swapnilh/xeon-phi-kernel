@@ -960,7 +960,12 @@ access_error(unsigned long error_code, struct vm_area_struct *vma)
 
 	/* read, present: */
 	if (unlikely(error_code & PF_PROT))
-		return 1;
+	{
+		if((error_code & PF_RSVD) && current->mm->badger_trap_en==1)
+			return 0;
+		else
+			return 1;
+	}
 
 	/* read, not present: */
 	if (unlikely(!(vma->vm_flags & (VM_READ | VM_EXEC | VM_WRITE))))
@@ -1074,7 +1079,7 @@ __do_page_fault(struct pt_regs *regs, unsigned long error_code)
 			local_irq_enable();
 	}
 
-	if (unlikely(error_code & PF_RSVD))
+	if (unlikely(error_code & PF_RSVD) && current->mm->badger_trap_en==0)
 		pgtable_bad(regs, error_code, address);
 
 	if (static_cpu_has(X86_FEATURE_SMAP)) {
@@ -1167,6 +1172,14 @@ good_area:
 	if (unlikely(access_error(error_code, vma))) {
 		bad_area_access_error(regs, error_code, address);
 		return;
+	}
+	
+	if(error_code & PF_INSTR)
+	{
+		/*
+		 * Instruction Page Fault
+		 */
+		flags = flags | FAULT_FLAG_INST;
 	}
 
 	/*

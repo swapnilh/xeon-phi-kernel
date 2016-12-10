@@ -453,21 +453,25 @@ static int zram_bvec_write(struct zram *zram, struct bio_vec *bvec, u32 index,
 			zram_test_flag(meta, index, ZRAM_ZERO)))
 		zram_free_page(zram, index);
 
-	ret = lzo1x_1_compress(uncmem, PAGE_SIZE, src, &clen,
-			       meta->compress_workmem);
+//	ret = lzo1x_1_compress(uncmem, PAGE_SIZE, src, &clen,
+//			       meta->compress_workmem);
+//	Done later so might as well perform
+	copy_page(src, uncmem);
+	clen = PAGE_SIZE;			       
 
 	if (!is_partial_io(bvec)) {
 		kunmap_atomic(user_mem);
 		user_mem = NULL;
 		uncmem = NULL;
 	}
-
+/*
 	if (unlikely(ret != LZO_E_OK)) {
 		pr_err("Compression failed! err=%d\n", ret);
 		goto out;
 	}
-
-	if (unlikely(clen > max_zpage_size)) {
+*/
+// Removed the unlikely tag
+	if (clen > max_zpage_size) {
 		zram->stats.bad_compress++;
 		clen = PAGE_SIZE;
 		src = NULL;
