@@ -60,6 +60,7 @@
 #include <linux/migrate.h>
 #include <linux/string.h>
 #include <linux/userfaultfd_k.h>
+#include <linux/mempolicy.h>
 
 #include <asm/io.h>
 #include <asm/pgalloc.h>
@@ -89,7 +90,9 @@ extern inline int is_pte_reserved(pte_t pte);
 extern inline pmd_t pmd_mkreserve(pmd_t pmd);
 extern inline pmd_t pmd_unreserve(pmd_t pmd);
 extern inline int is_pmd_reserved(pmd_t pmd);
-
+extern long do_mbind(unsigned long start, unsigned long len,
+		     unsigned short mode, unsigned short mode_flags,
+		     nodemask_t *nmask, unsigned long flags);
 unsigned long num_physpages;
 /*
  * A number of key systems in x86 including ioremap() rely on the assumption
@@ -3890,6 +3893,10 @@ static int do_fake_page_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 	unsigned long ret;
 	static unsigned int consecutive = 0;
 	static unsigned long prev_address = 0;
+	static unsigned ctr = 0;
+	unsigned short mode_flags, mode;
+	printk("Page Fault!\n");
+	NODEMASK_ALLOC(nodemask_t, hbm_mask, GFP_KERNEL | __GFP_NORETRY);
 
 	if(address == prev_address)
 		consecutive++;
@@ -3903,6 +3910,7 @@ static int do_fake_page_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 	{
 		*page_table = pte_unreserve(*page_table);
 		pte_unmap_unlock(page_table, ptl);
+		NODEMASK_FREE(hbm_mask);
 		return 0;
 	}
 
@@ -3915,9 +3923,10 @@ static int do_fake_page_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 	touch_page_addr = (void *)(address & PAGE_MASK);
 	ret = copy_from_user(&touched, (__force const void __user *)touch_page_addr, sizeof(unsigned long));
 
-	if(ret)
+	if(ret) {
+		NODEMASK_FREE(hbm_mask);
 		return VM_FAULT_SIGBUS;
-
+	}
 	/* Here where we do all our analysis */
 	current->total_dtlb_4k_misses++;
 	current->total_dtlb_misses++;
@@ -3925,6 +3934,27 @@ static int do_fake_page_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 		*page_table = pte_mkreserve(*page_table);
 	pte_unmap_unlock(page_table, ptl);
 
+	/* Here we migrate the pages */
+	/* Page should be HBW, but still check once*/
+	if(vma->map_hbw) {
+		/* Ensure page is not already on MCDRAM */
+		if(page_to_nid(pte_page(*page_table)) !=1) {
+			mode = MPOL_BIND;
+			mode_flags = mode & MPOL_MODE_FLAGS;
+			init_nodemask_of_node(hbm_mask, 1);
+			/* __pa() aligns address to start of page */
+			ret = do_mbind(__pa(address), 4096, mode, mode_flags, hbm_mask, MPOL_MF_MOVE);
+//	do_pages_stat(mm, 1, pages, status) TOO SLOW
+		}
+		else
+			ctr++;
+		if(ctr%1000==0 && ctr >0) {
+			printk("Addr:%lu Page:%lu already on node 1\n", address, __pa(address));
+		}
+		if(ret)
+			printk("Error:%lu in migration! Addr:%lu Page:%lu\n", ret, address, __pa(address));
+	}
+	NODEMASK_FREE(hbm_mask);
 	return 0;
 }
 

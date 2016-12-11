@@ -313,5 +313,10 @@ static inline int mpol_misplaced(struct page *page, struct vm_area_struct *vma,
 	return -1; /* no node preference */
 }
 
+
+long do_mbind(unsigned long start, unsigned long len,
+		     unsigned short mode, unsigned short mode_flags,
+		     nodemask_t *nmask, unsigned long flags);
+
 #endif /* CONFIG_NUMA */
 #endif

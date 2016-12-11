@@ -1178,7 +1178,7 @@ static struct page *new_vma_page(struct page *page, unsigned long private, int *
 }
 #endif
 
-static long do_mbind(unsigned long start, unsigned long len,
+long do_mbind(unsigned long start, unsigned long len,
 		     unsigned short mode, unsigned short mode_flags,
 		     nodemask_t *nmask, unsigned long flags)
 {
