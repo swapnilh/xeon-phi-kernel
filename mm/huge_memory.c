@@ -1129,7 +1129,8 @@ static int do_huge_pmd_wp_page_fallback(struct mm_struct *mm,
 		pte = pte_offset_map(&_pmd, haddr);
 		VM_BUG_ON(!pte_none(*pte));
 		/* Make the page table entry as reserved for TLB miss tracking */
-		if(mm && (mm->badger_trap_en==1) && (!(flags & FAULT_FLAG_INST)))
+		if(mm && (mm->badger_trap_en==1) && (!(flags & FAULT_FLAG_INST)) 
+			&& (vma->map_hbw))
 		{
 			entry = pte_mkreserve(entry);
 		}

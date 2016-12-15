@@ -170,6 +170,7 @@ void badger_trap_init(struct mm_struct *mm)
 			if(vma && pud_huge(*pud) && is_vm_hugetlb_page(vma)) {
 				if(vma->map_hbw)
 				{
+					smp_wmb(); //see comment in __pte_alloc
 					spin_lock(&mm->page_table_lock);
 					page_table = huge_pte_offset(mm, address);
 					*page_table = pte_mkreserve(*page_table);
@@ -187,6 +188,7 @@ void badger_trap_init(struct mm_struct *mm)
 				{	
 					if(vma->map_hbw)
 					{
+						smp_wmb(); //see comment in __pte_alloc
 						spin_lock(&mm->page_table_lock);
 						*pmd = pmd_mkreserve(*pmd);
 						spin_unlock(&mm->page_table_lock);

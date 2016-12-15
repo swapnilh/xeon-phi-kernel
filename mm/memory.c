@@ -3037,7 +3037,8 @@ gotten:
 		entry = maybe_mkwrite(pte_mkdirty(entry), vma);
 
 		/* Make the page table entry as reserved for TLB miss tracking */
-		if(mm && (mm->badger_trap_en==1) && (!(flags & FAULT_FLAG_INST)))
+		if(mm && (mm->badger_trap_en==1) && (!(flags & FAULT_FLAG_INST))
+				&& (vma->map_hbw))
 		{
 			entry = pte_mkreserve(entry);
 		}
@@ -3349,7 +3350,8 @@ static int do_swap_page(struct mm_struct *mm, struct vm_area_struct *vma,
 	flush_icache_page(vma, page);
 
 	/* Make the page table entry as reserved for TLB miss tracking */
-	if(mm && (mm->badger_trap_en==1) && (!(flags & FAULT_FLAG_INST)))
+	if(mm && (mm->badger_trap_en==1) && (!(flags & FAULT_FLAG_INST))
+		&& (vma->map_hbw))
 	{
 		pte = pte_mkreserve(pte);
 	}
@@ -3888,14 +3890,14 @@ static int do_fake_page_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 		unsigned long address, pte_t *page_table, pmd_t *pmd,
 		unsigned int flags, spinlock_t *ptl)
 {
-        unsigned long *touch_page_addr;
-        unsigned long touched;
-	unsigned long ret;
+/*        unsigned long *touch_page_addr;
+        unsigned long touched; SWAPNIL: causes page fault*/
+	unsigned long ret = 0;
 	static unsigned int consecutive = 0;
 	static unsigned long prev_address = 0;
 	static unsigned ctr = 0;
+	static unsigned mig_ctr = 0;
 	unsigned short mode_flags, mode;
-	printk("Page Fault!\n");
 	NODEMASK_ALLOC(nodemask_t, hbm_mask, GFP_KERNEL | __GFP_NORETRY);
 
 	if(address == prev_address)
@@ -3920,13 +3922,13 @@ static int do_fake_page_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 	*page_table = pte_mkyoung(*page_table);
 	*page_table = pte_unreserve(*page_table);
 
-	touch_page_addr = (void *)(address & PAGE_MASK);
+/*	touch_page_addr = (void *)(address & PAGE_MASK);
 	ret = copy_from_user(&touched, (__force const void __user *)touch_page_addr, sizeof(unsigned long));
 
 	if(ret) {
 		NODEMASK_FREE(hbm_mask);
 		return VM_FAULT_SIGBUS;
-	}
+	}*/
 	/* Here where we do all our analysis */
 	current->total_dtlb_4k_misses++;
 	current->total_dtlb_misses++;
@@ -3942,17 +3944,23 @@ static int do_fake_page_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 			mode = MPOL_BIND;
 			mode_flags = mode & MPOL_MODE_FLAGS;
 			init_nodemask_of_node(hbm_mask, 1);
-			/* __pa() aligns address to start of page */
-			ret = do_mbind(__pa(address), 4096, mode, mode_flags, hbm_mask, MPOL_MF_MOVE);
-//	do_pages_stat(mm, 1, pages, status) TOO SLOW
+			up_read(&mm->mmap_sem); // Needed by do_mbind()
+			ret = do_mbind(PAGE_ALIGN(address), 4096, mode, mode_flags, hbm_mask, MPOL_MF_MOVE);
+			down_read(&mm->mmap_sem); // Needed by do_mbind()
+			mig_ctr++;
+			if(mig_ctr%1000==0 && ret==0) {
+				printk("Addr:%lu Page:%lu migrated successfully.\n", address, PAGE_ALIGN(address));
+			}
+
 		}
-		else
+		else {
 			ctr++;
-		if(ctr%1000==0 && ctr >0) {
-			printk("Addr:%lu Page:%lu already on node 1\n", address, __pa(address));
+			if(ctr%1000==0) {
+				printk("Addr:%lu Page:%lu already on node 1\n", address, PAGE_ALIGN(address));
+			}
 		}
 		if(ret)
-			printk("Error:%lu in migration! Addr:%lu Page:%lu\n", ret, address, __pa(address));
+			printk("Error:%lu in migration! Addr:%lu Page:%lu\n", ret, address, PAGE_ALIGN(address));
 	}
 	NODEMASK_FREE(hbm_mask);
 	return 0;
@@ -3980,7 +3988,7 @@ static int handle_pte_fault(struct mm_struct *mm,
 	spinlock_t *ptl;
 	pte_t* page_table;
 
-	if(mm && mm->badger_trap_en && (flags & FAULT_FLAG_INST))
+	if(mm && mm->badger_trap_en && (flags & FAULT_FLAG_INST) && (vma->map_hbw))
 	{
                 if(is_pte_reserved(*pte))
                         *pte = pte_unreserve(*pte);	
@@ -3998,7 +4006,8 @@ static int handle_pte_fault(struct mm_struct *mm,
  	 * 	for writing purposes need to be handled correctly.
  	 * 2. We have taken a fake page fault on a normal page.
  	 */
-	if(mm && mm->badger_trap_en && (!(flags & FAULT_FLAG_INST)) && pte_present(*pte))
+	if(mm && mm->badger_trap_en && (!(flags & FAULT_FLAG_INST)) && pte_present(*pte) 
+		&& (vma->map_hbw))
 	{
 		page_table = pte_offset_map_lock(mm, pmd, address, &ptl);
 		entry = *page_table;
@@ -4071,11 +4080,16 @@ unlock:
 static int transparent_fake_fault(struct mm_struct *mm, struct vm_area_struct *vma,
                         unsigned long address, pmd_t *page_table, unsigned int flags)
 {
-        unsigned long *touch_page_addr;
-        unsigned long touched;
-        unsigned long ret;
+//        unsigned long *touch_page_addr;
+//        unsigned long touched;
+        unsigned long ret = 0;
         static unsigned int consecutive = 0;
         static unsigned long prev_address = 0;
+	static unsigned ctr = 0;
+	static unsigned mig_ctr = 0;
+	unsigned short mode_flags, mode;
+	spinlock_t *ptl;
+	NODEMASK_ALLOC(nodemask_t, hbm_mask, GFP_KERNEL | __GFP_NORETRY);
 
         if(address == prev_address)
                 consecutive++;
@@ -4085,9 +4099,11 @@ static int transparent_fake_fault(struct mm_struct *mm, struct vm_area_struct *v
                 prev_address = address;
         }
 
+	ptl = pmd_lock(mm, page_table);
         if(consecutive > 1)
         {
                 *page_table = pmd_unreserve(*page_table);
+		spin_unlock(ptl); 
                 return 0;
         }
 
@@ -4097,17 +4113,47 @@ static int transparent_fake_fault(struct mm_struct *mm, struct vm_area_struct *v
         *page_table = pmd_mkyoung(*page_table);
         *page_table = pmd_unreserve(*page_table);
 
-        touch_page_addr = (void *)(address & PAGE_MASK);
+	/* Swapnil: what is this for? Causes a page fault */
+/*        touch_page_addr = (void *)(address & PAGE_MASK);
         ret = copy_from_user(&touched, (__force const void __user *)touch_page_addr, sizeof(unsigned long));
 
         if(ret)
                 return VM_FAULT_SIGBUS;
-
+*/
         /* Here where we do all our analysis */
         current->total_dtlb_hugetlb_misses++;
         current->total_dtlb_misses++;
 
         *page_table = pmd_mkreserve(*page_table);
+	
+	/* Here we migrate the pages */
+	/* Page should be HBW, but still check once*/
+	spin_unlock(ptl); // Needed by __split_huge_page_pmd in do_mbind
+	if(vma->map_hbw) {
+		/* Ensure page is not already on MCDRAM */
+		if(page_to_nid(pmd_page(*page_table)) !=1) {
+			mode = MPOL_BIND;
+			mode_flags = mode & MPOL_MODE_FLAGS;
+			init_nodemask_of_node(hbm_mask, 1);
+			up_read(&mm->mmap_sem); // Needed by do_mbind()
+			ret = do_mbind(PAGE_ALIGN(address), 4096, mode, mode_flags, hbm_mask, MPOL_MF_MOVE);
+			down_read(&mm->mmap_sem); // Needed by do_mbind()
+			mig_ctr++;
+			if(mig_ctr%1000==0 && ret==0) {
+				printk("(THP) Addr:%lu Page:%lu migrated successfully.\n", address, PAGE_ALIGN(address));
+			}
+		}
+		else {
+			ctr++;
+			if(ctr%1000==0) {
+				printk("(THP) Addr:%lu Page:%lu already on node 1\n", address, __pa(address));
+			}
+		}
+		if(ret)
+			printk("Error:%lu in THP migration! Addr:%lu Page:%lu\n", ret, address, __pa(address));
+	}
+	NODEMASK_FREE(hbm_mask);
+
         return 0;
 }
 
@@ -4137,8 +4183,10 @@ static int __handle_mm_fault(struct mm_struct *mm, struct vm_area_struct *vma,
         /*
  	 * Here we check for transparent huge page that are marked as reserved
          */
-        if(mm && mm->badger_trap_en && (!(flags & FAULT_FLAG_INST)) && pmd && pmd_trans_huge(*pmd))
+        if(mm && mm->badger_trap_en && (!(flags & FAULT_FLAG_INST)) && pmd && pmd_trans_huge(*pmd) 
+		&& (vma->map_hbw))
         {
+		smp_wmb(); /* See comment in __pte_alloc */
                 spin_lock(&mm->page_table_lock);
                 entry = *pmd;
                 if((flags & FAULT_FLAG_WRITE) && is_pmd_reserved(entry) && !pmd_write(entry) && pmd_present(entry))
@@ -4148,8 +4196,8 @@ static int __handle_mm_fault(struct mm_struct *mm, struct vm_area_struct *vma,
                 }
                 if(is_pmd_reserved(entry) && pmd_present(entry))
                 {
-                        ret = transparent_fake_fault(mm, vma, address, pmd, flags);
                         spin_unlock(&mm->page_table_lock);
+                        ret = transparent_fake_fault(mm, vma, address, pmd, flags);
 			return ret;
                 }
 		if(pmd_present(entry) && pmd_trans_splitting(entry))

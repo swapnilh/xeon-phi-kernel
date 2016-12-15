@@ -3297,6 +3297,9 @@ int hugetlb_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 
 	ptep = huge_pte_offset(mm, address);
 	ptl = huge_pte_lockptr(h, mm, ptep);
+	mapping = vma->vm_file->f_mapping;
+	idx = vma_hugecache_offset(h, vma, address);
+	hash = fault_mutex_hash(h, mm, vma, mapping, idx, address);
 
 	/*
  	 * Here we check for Huge page that are marked as reserved
@@ -3304,10 +3307,11 @@ int hugetlb_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 	if(mm && mm->badger_trap_en && (!(flags & FAULT_FLAG_INST)) && ptep 
 		&& (vma->map_hbw))
 	{
-		spin_lock(ptl);
+		mutex_lock(&htlb_fault_mutex_table[hash]);
+		/* Unnecessary */
 		/* Check for a racing update before calling hugetlb_cow */
-		if (unlikely(!pte_same(entry, huge_ptep_get(ptep))))
-			goto out_ptl;
+//		if (unlikely(!pte_same(entry, huge_ptep_get(ptep))))
+//			goto out_ptl;
 		entry = huge_ptep_get(ptep);
 		if((flags & FAULT_FLAG_WRITE) && is_pte_reserved(entry) && !huge_pte_write(entry) && pte_present(entry))
 		{
@@ -3315,8 +3319,7 @@ int hugetlb_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 		        get_page(page);
 		        if (page != pagecache_page)
 		                lock_page(page);
-// TODO - Is this spin lock necessary?
-//		        spin_lock(&mm->page_table_lock);
+			spin_lock(ptl);
 			ret = hugetlb_cow(mm, vma, address, ptep, entry,
                                                  pagecache_page, ptl, flags);
 			goto out_ptl;
@@ -3324,13 +3327,13 @@ int hugetlb_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 		if(is_pte_reserved(entry) && pte_present(entry))
 		{
 			ret = hugetlb_fake_fault(mm, vma, address, ptep, flags);
-			goto out_ptl;
+			goto out_mutex;
 		}
 		if(pte_present(entry))
 		{
 			*ptep = pte_mkreserve(*ptep);
 		}
-		spin_unlock(ptl);
+		mutex_unlock(&htlb_fault_mutex_table[hash]);
 	}
 
 
@@ -3348,15 +3351,12 @@ int hugetlb_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 	if (!ptep)
 		return VM_FAULT_OOM;
 
-	mapping = vma->vm_file->f_mapping;
-	idx = vma_hugecache_offset(h, vma, address);
 
 	/*
 	 * Serialize hugepage allocation and instantiation, so that we don't
 	 * get spurious allocation failures if two CPUs race to instantiate
 	 * the same page in the page cache.
 	 */
-	hash = fault_mutex_hash(h, mm, vma, mapping, idx, address);
 	mutex_lock(&htlb_fault_mutex_table[hash]);
 
 	entry = huge_ptep_get(ptep);
